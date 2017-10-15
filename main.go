@@ -3,344 +3,300 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
-	"io"
+	"fmt"
+	"html/template"
 	"log"
 	"net/http"
-	"net/http/cookiejar"
-	"net/http/httputil"
-	"regexp"
+	"os"
 	"strconv"
+	"sync"
 	"time"
 
-	"golang.org/x/net/publicsuffix"
+	blackfriday "gopkg.in/russross/blackfriday.v2"
 
-	"github.com/PuerkitoBio/goquery"
+	"github.com/d4l3k/flog/golfer"
 	"github.com/jasonlvhit/gocron"
-	"github.com/pkg/errors"
 )
 
 var (
 	username = flag.String("user", "", "the username")
 	password = flag.String("pass", "", "the password")
+	bind     = flag.String("bind", ":8080", "the address to bind to")
+	saveFile = flag.String("file", "flog.data", "the file to save pending data to")
+)
+
+var (
+	tmpls = template.Must(template.ParseGlob("templates/*"))
 )
 
 const (
-	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36"
-
-	courseID       = "17078"
-	origin         = "https://www.chronogolf.com"
-	home           = "https://www.chronogolf.com/en/club/" + courseID + "/widget?medium=widget&source=club"
-	sessionAPI     = "https://www.chronogolf.com/private_api/sessions"
-	courseAPI      = "https://www.chronogolf.com/private_api/clubs/" + courseID + "/courses"
-	reservationAPI = "https://www.chronogolf.com/private_api/reservations"
-
-	loginEvery = 24 * time.Hour
+	dataFormatVersion = 1
+	dateFormat        = "2006-01-02"
+	daysCanBook       = 8
+	defaultDaysAway   = daysCanBook + 1
 )
 
-type golfer struct {
-	client *http.Client
-
-	user, pass string
-
-	lastLoggedIn time.Time
-	appConfig    AppConfig
-	userSession  SessionResponse
-}
-
-func newGolfer(user, pass string) (*golfer, error) {
-	if len(user) == 0 || len(pass) == 0 {
-		return nil, errors.Errorf("need to specify -user, -pass")
-	}
-
-	g := golfer{
-		user: user,
-		pass: pass,
-	}
-	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+func parseDate(day string) (time.Time, error) {
+	t, err := time.ParseInLocation(dateFormat, day, time.Local)
 	if err != nil {
-		return nil, err
+		return time.Time{}, err
 	}
-	g.client = &http.Client{
-		Jar:     jar,
-		Timeout: 1 * time.Minute,
-	}
-
-	if err := g.getConfig(); err != nil {
-		return nil, err
-	}
-
-	return &g, nil
+	return t, nil
 }
 
-func (g *golfer) newRequest(method, url string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, body)
+func dateIsBookable(day string) (bool, error) {
+	t, err := parseDate(day)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Referer", home)
-	req.Header.Set("Origin", origin)
-	if g.appConfig.CSRFToken != "" {
-		req.Header.Set("X-CSRF-Token", g.appConfig.CSRFToken)
-	}
-
-	return req, nil
+	available := t.Add(-daysCanBook * 24 * time.Hour)
+	log.Printf("dateIsBookable: %s %s", t, available)
+	return available.Before(time.Now()), nil
 }
 
-func (g *golfer) getJSON(url string, respBody interface{}) error {
-	req, err := g.newRequest("GET", url, nil)
+func furthestBookingTime() string {
+	return time.Now().Add(defaultDaysAway * 24 * time.Hour).Format(dateFormat)
+}
+
+type PendingReservation struct {
+	Day     string
+	Players int
+}
+
+func (s *server) savePending() error {
+	f, err := os.OpenFile(*saveFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Accept", "application/json")
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return errors.Errorf("got status %q", resp.Status)
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
+	defer f.Close()
+	if err := json.NewEncoder(f).Encode(s); err != nil {
 		return err
 	}
 	return nil
 }
 
-func dumpRequest(req *http.Request) {
-	requestDump, err := httputil.DumpRequest(req, true)
-	if err != nil {
-		log.Fatalf("%+v", err)
+func (s *server) loadPending() error {
+	f, err := os.OpenFile(*saveFile, os.O_RDONLY, 0755)
+	if os.IsNotExist(err) {
+		log.Printf("Save file doesn't exist.")
+		return nil
 	}
-	log.Println(string(requestDump))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := json.NewDecoder(f).Decode(&s); err != nil {
+		return err
+	}
+	if s.DataFormatVersion != dataFormatVersion {
+		log.Fatalf("Flog data file version (%d) does not match current (%d)!", s.DataFormatVersion, dataFormatVersion)
+	}
+	return nil
 }
 
-func (g *golfer) postJSON(url string, reqBody, respBody interface{}) error {
+func renderMarkdown(w http.ResponseWriter, tmpl string, args interface{}) {
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
+	if err := tmpls.ExecuteTemplate(&buf, tmpl, args); err != nil {
+		http.Error(w, fmt.Sprintf("%+v", err), 500)
+		return
+	}
+	w.Header().Add("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(`
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>flog</title>
+	<link rel="stylesheet" href="static/styles.css">
+	`))
+	if _, err := w.Write(blackfriday.Run(buf.Bytes())); err != nil {
+		http.Error(w, fmt.Sprintf("%+v", err), 500)
+		return
+	}
+}
+
+type server struct {
+	g *golfer.Golfer
+
+	mu sync.Mutex
+
+	DataFormatVersion int
+	Pending           []PendingReservation
+}
+
+func newServer() error {
+	log.Println("Running...")
+
+	s := server{
+		DataFormatVersion: dataFormatVersion,
+	}
+	if err := s.loadPending(); err != nil {
 		return err
 	}
-	req, err := g.newRequest("POST", url, &buf)
+
+	g, err := golfer.New(*username, *password)
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Content-Type", "application/json")
+	s.g = g
 
-	resp, err := g.client.Do(req)
-	if err != nil {
+	gocron.Every(1).Days().At("00:00").Do(s.attemptBooking)
+
+	mux := http.NewServeMux()
+
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static/"))))
+	mux.HandleFunc("/reserve", s.handleReserve)
+	mux.HandleFunc("/cancel", s.handleCancelReservation)
+	mux.HandleFunc("/", s.handleIndex)
+
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return errors.Errorf("got status %q", resp.Status)
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
-		return err
-	}
 	return nil
 }
 
-type AppConfig struct {
-	RailsEnv               string   `json:"RAILS_ENV"`
-	RavenFrontendPublicDSN string   `json:"RAVEN_FRONTEND_PUBLIC_DSN"`
-	SwiftypeHost           string   `json:"SWIFTYPE_HOST"`
-	SwiftypeEngineKey      string   `json:"SWIFTYPE_ENGINE_KEY"`
-	SwiftypeEngineSlug     string   `json:"SWIFTYPE_ENGINE_SLUG"`
-	Locale                 string   `json:"LOCALE"`
-	Lang                   string   `json:"LANG"`
-	AvailableLangs         []string `json:"AVAILABLE_LANGS"`
-	CSRFToken              string   `json:"CSRF_TOKEN"`
-	HasSession             bool     `json:"HAS_SESSION"`
-	StripeKey              string   `json:"STRIPE_KEY"`
-	ClubID                 int      `json:"CLUB_ID"`
-	ClubCurrency           string   `json:"CLUB_CURRENCY"`
+func (s *server) handleReserve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "must use post", 400)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form: "+err.Error(), 400)
+		return
+	}
+
+	date, err := parseDate(r.FormValue("date"))
+	if err != nil {
+		http.Error(w, "invalid date value: "+err.Error(), 400)
+		return
+	}
+	players, err := strconv.Atoi(r.FormValue("players"))
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid players value: "+err.Error(), 400)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pr := PendingReservation{
+		Day:     date.Format(dateFormat),
+		Players: players,
+	}
+	for _, p := range s.Pending {
+		if p == pr {
+			http.Error(w, "reservation already exists", 400)
+			return
+		}
+	}
+	s.Pending = append(s.Pending, pr)
+	if err := s.savePending(); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save pending: %+v", err), 500)
+		return
+	}
+
+	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+
+	go s.attemptBooking()
 }
 
-var configRegex = regexp.MustCompile(
-	`angular\.module\('shared'\)\.constant\('CONFIG',\s*({.*})\s*\);`,
-)
-
-func (g *golfer) getConfig() error {
-	req, err := g.newRequest("GET", home, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromResponse(resp)
-	if err != nil {
-		return err
+func (s *server) handleCancelReservation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "must use post", 400)
+		return
 	}
 
-	found := false
-	for _, n := range doc.Find("script").Nodes {
-		if n.FirstChild == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Pending = nil
+	if err := s.savePending(); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save pending: %+v", err), 500)
+		return
+	}
+
+	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+}
+
+func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	reservations, err := s.g.Reservations()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("%+v", err), 500)
+		return
+	}
+	renderMarkdown(w, "index.md", struct {
+		Reservations []golfer.Reservation
+		Pending      []PendingReservation
+		DefaultDay   string
+	}{
+		Reservations: reservations,
+		Pending:      s.Pending,
+		DefaultDay:   furthestBookingTime(),
+	})
+}
+
+func (s *server) attemptBooking() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	log.Println("Attemping booking!")
+	var pending []PendingReservation
+	for _, p := range s.Pending {
+		can, err := dateIsBookable(p.Day)
+		if err != nil {
+			log.Printf("%+v", err)
 			continue
 		}
-		match := configRegex.FindSubmatch([]byte(n.FirstChild.Data))
-		if len(match) != 2 {
+		if !can {
+			pending = append(pending, p)
 			continue
 		}
-		if err := json.NewDecoder(bytes.NewReader(match[1])).Decode(&g.appConfig); err != nil {
-			return err
-		}
-		found = true
-		break
-	}
-
-	if !found {
-		return errors.Errorf("failed to find app config")
-	}
-
-	return nil
-}
-
-type LoginRequest struct {
-	Session Session `json:"session"`
-}
-
-type Session struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type SessionResponse struct {
-	ID              int         `json:"id"`
-	ActivationState string      `json:"activation_state"`
-	Email           string      `json:"email"`
-	FirstName       string      `json:"first_name"`
-	LastName        string      `json:"last_name"`
-	Phone           string      `json:"phone"`
-	DateOfBirth     interface{} `json:"date_of_birth"`
-	Gender          int         `json:"gender"`
-	Settings        struct {
-	} `json:"settings"`
-	Newsletter    bool          `json:"newsletter"`
-	LastLoginAt   string        `json:"last_login_at"`
-	ChronogolfRef string        `json:"chronogolf_ref"`
-	Admin         bool          `json:"admin"`
-	Affiliations  []Affiliation `json:"affiliations"`
-}
-
-type Affiliation struct {
-	ID                int    `json:"id"`
-	Role              string `json:"role"`
-	OrganizationID    int    `json:"organization_id"`
-	OrganizationType  string `json:"organization_type"`
-	ProviderID        int    `json:"provider_id"`
-	AffiliationTypeID int    `json:"affiliation_type_id"`
-}
-
-func (g *golfer) session() (*SessionResponse, error) {
-	var resp SessionResponse
-	if err := g.getJSON(sessionAPI, &resp); err != nil {
-		return nil, err
-	}
-	g.userSession = resp
-	return &resp, nil
-}
-
-type Course struct {
-	ID            int         `json:"id"`
-	Position      interface{} `json:"position"`
-	Name          string      `json:"name"`
-	Holes         int         `json:"holes"`
-	RoundDuration int         `json:"round_duration"`
-	Par           int         `json:"par"`
-	Distance      interface{} `json:"distance"`
-	SlopeSss      interface{} `json:"slope_sss"`
-	SlopeSlop     interface{} `json:"slope_slop"`
-	Settings      struct {
-		Color         string `json:"color"`
-		CartMandatory string `json:"cart_mandatory"`
-	} `json:"settings"`
-	ScorecardID          int   `json:"scorecard_id"`
-	ProductIds           []int `json:"product_ids"`
-	ClubID               int   `json:"club_id"`
-	AllowDoubleRound     bool  `json:"allow_double_round"`
-	OnlineBookingEnabled bool  `json:"online_booking_enabled"`
-	DefaultProductID     int   `json:"default_product_id"`
-}
-
-func (g *golfer) courses() ([]Course, error) {
-	var resp []Course
-	if err := g.getJSON(courseAPI, &resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (g *golfer) affiliation() (Affiliation, error) {
-	for _, a := range g.userSession.Affiliations {
-		if strconv.Itoa(a.OrganizationID) == courseID {
-			return a, nil
+		if err := s.bookFirst(p.Day, p.Players); err != nil {
+			log.Printf("%+v", err)
+			continue
 		}
 	}
-	return Affiliation{}, errors.New("can't find any matching affiliations")
+	if len(pending) != len(s.Pending) {
+		s.Pending = pending
+		if err := s.savePending(); err != nil {
+			log.Printf("%+v", err)
+			return
+		}
+	}
 }
 
-func (g *golfer) ensureLoggedIn() error {
-	if time.Since(g.lastLoggedIn) > loginEvery {
-		if _, err := g.login(); err != nil {
-			return err
-		}
+func (s *server) bookFirst(day string, players int) error {
+	af, err := s.g.Affiliation()
+	if err != nil {
+		return err
+	}
+	c, err := s.g.Course()
+	if err != nil {
+		return err
+	}
+	tt, err := s.g.TeeTimes(af, c, day, players)
+	if err != nil {
+		return err
+	}
+	if len(tt) == 0 {
+		return errors.New("no tee times found")
+	}
+	firstTT := tt[0]
+	if _, err := s.g.Reserve(af, c, firstTT, players); err != nil {
+		return err
 	}
 	return nil
-}
-
-func (g *golfer) login() (*SessionResponse, error) {
-	req := LoginRequest{
-		Session: Session{
-			Email:    g.user,
-			Password: g.pass,
-		},
-	}
-	var resp SessionResponse
-	if err := g.postJSON(sessionAPI, req, &resp); err != nil {
-		return nil, err
-	}
-	g.lastLoggedIn = time.Now()
-	g.userSession = resp
-	return &resp, nil
-}
-
-// book attempts to book the earliest available timeslot 8 days later.
-func (g *golfer) book() {
-	g.printNextRun()
-}
-
-func (g *golfer) printNextRun() {
-	_, t := gocron.NextRun()
-	log.Printf("Next booking attempt at %+v", t)
 }
 
 func main() {
+	log.SetFlags(log.Flags() | log.Lshortfile)
 	flag.Parse()
-	log.Println("Running...")
-	g, err := newGolfer(*username, *password)
-	if err != nil {
-		log.Fatalf("%+v", err)
-	}
 
-	if err := g.ensureLoggedIn(); err != nil {
-		log.Fatalf("%+v", err)
-	}
-
-	gocron.Every(1).Day().At("00:00").Do(g.book)
-	g.printNextRun()
-
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := newServer(); err != nil {
 		log.Fatalf("%+v", err)
 	}
 }
