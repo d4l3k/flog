@@ -52,7 +52,6 @@ func dateIsBookable(day string) (bool, error) {
 		return false, err
 	}
 	available := t.Add(-daysCanBook * 24 * time.Hour)
-	log.Printf("dateIsBookable: %s %s", t, available)
 	return available.Before(time.Now()), nil
 }
 

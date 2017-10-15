@@ -307,6 +307,10 @@ func (g *Golfer) Courses() ([]Course, error) {
 }
 
 func (g *Golfer) Affiliation() (Affiliation, error) {
+	if err := g.ensureLoggedIn(); err != nil {
+		return Affiliation{}, err
+	}
+
 	for _, a := range g.userSession.Affiliations {
 		if strconv.Itoa(a.OrganizationID) == courseID {
 			return a, nil

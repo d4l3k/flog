@@ -27,21 +27,21 @@ type Reservation struct {
 	PreCheckedInAt               interface{} `json:"pre_checked_in_at,omitempty"`
 	Source                       string      `json:"source"`
 	Teetime                      struct {
-		ID         int         `json:"id"`
-		CourseID   int         `json:"course_id"`
-		StartTime  string      `json:"start_time"`
-		Date       string      `json:"date"`
-		EventID    interface{} `json:"event_id"`
-		Hole       int         `json:"hole"`
-		Round      int         `json:"round"`
-		Active     bool        `json:"active"`
-		Format     string      `json:"format"`
-		Blocked    bool        `json:"blocked"`
-		Clone      bool        `json:"clone"`
-		FreeSlots  int         `json:"free_slots"`
-		CartsCount int         `json:"carts_count"`
-		CreatedAt  string      `json:"created_at"`
-		Departure  interface{} `json:"departure"`
+		ID         int         `json:"id,omitempty"`
+		CourseID   int         `json:"course_id,omitempty"`
+		StartTime  string      `json:"start_time,omitempty"`
+		Date       string      `json:"date,omitempty"`
+		EventID    interface{} `json:"event_id,omitempty"`
+		Hole       int         `json:"hole,omitempty"`
+		Round      int         `json:"round,omitempty"`
+		Active     bool        `json:"active,omitempty"`
+		Format     string      `json:"format,omitempty"`
+		Blocked    bool        `json:"blocked,omitempty"`
+		Clone      bool        `json:"clone,omitempty"`
+		FreeSlots  int         `json:"free_slots,omitempty"`
+		CartsCount int         `json:"carts_count,omitempty"`
+		CreatedAt  string      `json:"created_at,omitempty"`
+		Departure  interface{} `json:"departure,omitempty"`
 	} `json:"teetime,omitempty"`
 	DiscountType  interface{} `json:"discount_type,omitempty"`
 	AgreedOnTerms bool        `json:"agreed_on_terms,omitempty"`
@@ -51,27 +51,27 @@ type Reservation struct {
 }
 
 type Round struct {
-	ID                int         `json:"id"`
+	ID                int         `json:"id,omitempty"`
 	AffiliationTypeID int         `json:"affiliation_type_id"`
-	ClubID            int         `json:"club_id"`
+	ClubID            int         `json:"club_id,omitempty"`
 	Guest             interface{} `json:"guest"`
 	Paid              bool        `json:"paid"`
-	ReservationID     int         `json:"reservation_id"`
+	ReservationID     int         `json:"reservation_id,omitempty"`
 	EventTicketID     interface{} `json:"event_ticket_id"`
 	State             string      `json:"state"`
-	UserID            int         `json:"user_id"`
+	UserID            int         `json:"user_id,omitempty"`
 	Customer          struct {
-		ID        int         `json:"id"`
-		ClubID    int         `json:"club_id"`
-		FirstName string      `json:"first_name"`
-		LastName  string      `json:"last_name"`
-		Phone     string      `json:"phone"`
-		Email     string      `json:"email"`
-		MemberNo  string      `json:"member_no"`
-		BagNumber interface{} `json:"bag_number"`
+		ID        int         `json:"id,omitempty"`
+		ClubID    int         `json:"club_id,omitempty"`
+		FirstName string      `json:"first_name,omitempty"`
+		LastName  string      `json:"last_name,omitempty"`
+		Phone     string      `json:"phone,omitempty"`
+		Email     string      `json:"email,omitempty"`
+		MemberNo  string      `json:"member_no,omitempty"`
+		BagNumber interface{} `json:"bag_number,omitempty"`
 	} `json:"customer,omitempty"`
 
-	RoundLines           []RoundLine `json:"round_lines_attributes,omitempty"`
+	RoundLines           []RoundLine `json:"round_lines,omitempty"`
 	RoundLinesAttributes []RoundLine `json:"round_lines_attributes,omitempty"`
 }
 
@@ -116,6 +116,10 @@ func (g *Golfer) ReservationOptions(af Affiliation, c Course, tt TeeTime, player
 }
 
 func (g *Golfer) Reserve(af Affiliation, c Course, tt TeeTime, players int) (Reservation, error) {
+	if err := g.ensureLoggedIn(); err != nil {
+		return Reservation{}, err
+	}
+
 	opts, err := g.ReservationOptions(af, c, tt, players)
 	if err != nil {
 		return Reservation{}, err
