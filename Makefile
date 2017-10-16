@@ -2,8 +2,12 @@ ARGS?=
 
 .PHONY: build
 build:
+	go build -v .
+
+.PHONY: install
+install:
 	go install -v .
 
 .PHONY: run
-run: build
+run: install
 	flog $(ARGS)

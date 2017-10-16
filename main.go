@@ -138,7 +138,13 @@ func newServer() error {
 	}
 	s.g = g
 
-	gocron.Every(1).Days().At("00:00").Do(s.attemptBooking)
+	sch := gocron.NewScheduler()
+	sch.Every(1).Days().At("00:00").Do(s.attemptBooking)
+	stop := sch.Start()
+	defer close(stop)
+
+	_, time := gocron.NextRun()
+	fmt.Println("next run", time)
 
 	mux := http.NewServeMux()
 
@@ -147,7 +153,8 @@ func newServer() error {
 	mux.HandleFunc("/cancel", s.handleCancelReservation)
 	mux.HandleFunc("/", s.handleIndex)
 
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	log.Printf("Listening %s...", *bind)
+	if err := http.ListenAndServe(*bind, mux); err != nil {
 		return err
 	}
 

@@ -145,7 +145,7 @@ func (g *Golfer) postJSON(url string, reqBody, respBody interface{}) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return err
