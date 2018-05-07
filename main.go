@@ -33,13 +33,14 @@ var (
 
 const (
 	dataFormatVersion = 1
-	dateFormat        = "2006-01-02"
 	daysCanBook       = 8
 	defaultDaysAway   = daysCanBook + 1
+	defaultHour       = 7
+	defaultMinute     = 10
 )
 
 func parseDate(day string) (time.Time, error) {
-	t, err := time.ParseInLocation(dateFormat, day, time.Local)
+	t, err := time.ParseInLocation(golfer.DateFormat, day, time.Local)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -56,7 +57,9 @@ func dateIsBookable(day string) (bool, error) {
 }
 
 func furthestBookingTime() string {
-	return time.Now().Add(defaultDaysAway * 24 * time.Hour).Format(dateFormat)
+	day := time.Now().Add(defaultDaysAway * 24 * time.Hour)
+	t := time.Date(day.Year(), day.Month(), day.Day(), defaultHour, defaultMinute, 0, 0, day.Location())
+	return t.Format(golfer.DateFormat)
 }
 
 type PendingReservation struct {
@@ -187,7 +190,7 @@ func (s *server) handleReserve(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 
 	pr := PendingReservation{
-		Day:     date.Format(dateFormat),
+		Day:     date.Format(golfer.DateFormat),
 		Players: players,
 	}
 	for _, p := range s.Pending {
@@ -284,14 +287,33 @@ func (s *server) bookFirst(day string, players int) error {
 	if err != nil {
 		return err
 	}
-	tt, err := s.g.TeeTimes(af, c, day, players)
+	target, err := parseDate(day)
 	if err != nil {
 		return err
 	}
-	if len(tt) == 0 {
+
+	tts, err := s.g.TeeTimes(af, c, day, players)
+	if err != nil {
+		return err
+	}
+
+	var filteredTT []golfer.TeeTime
+	for _, tt := range tts {
+		t, err := tt.Time()
+		if err != nil {
+			return err
+		}
+		if t.Before(target) {
+			continue
+		}
+		filteredTT = append(filteredTT, tt)
+	}
+
+	if len(filteredTT) == 0 {
 		return errors.New("no tee times found")
 	}
-	firstTT := tt[0]
+	firstTT := filteredTT[0]
+	log.Printf("reserving %+v", firstTT)
 	if _, err := s.g.Reserve(af, c, firstTT, players); err != nil {
 		return err
 	}

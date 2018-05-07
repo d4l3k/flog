@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36"
+	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36"
 
 	courseID               = "17078"
 	origin                 = "https://www.chronogolf.com"
@@ -176,7 +176,7 @@ type AppConfig struct {
 }
 
 var configRegex = regexp.MustCompile(
-	`angular\.module\('shared'\)\.constant\('CONFIG',\s*({.*})\s*\);`,
+	`^\s*window.CHRONOGOLF_CONFIG = ({.*})\s*$`,
 )
 
 func (g *Golfer) getConfig() error {

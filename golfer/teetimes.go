@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type TeeTime struct {
@@ -22,6 +23,12 @@ type TeeTime struct {
 	CartsCount int         `json:"carts_count"`
 	CreatedAt  string      `json:"created_at"`
 	Departure  interface{} `json:"departure"`
+}
+
+const DateFormat = "2006-01-02T15:04"
+
+func (t TeeTime) Time() (time.Time, error) {
+	return time.ParseInLocation(DateFormat, fmt.Sprintf("%sT%s", t.Date, t.StartTime), time.Local)
 }
 
 func affiliationTypeIDs(af Affiliation, players int) string {

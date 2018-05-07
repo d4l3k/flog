@@ -15,7 +15,7 @@ possible time (typically 8am).
           <label for="date">Day</label>
         </td>
         <td>
-          <input type="date" id="date" name="date" value="{{.DefaultDay}}">
+          <input type="datetime-local" id="date" name="date" value="{{.DefaultDay}}">
         </td>
       </tr>
       <tr>
