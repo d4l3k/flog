@@ -17,6 +17,7 @@ import (
 	blackfriday "gopkg.in/russross/blackfriday.v2"
 
 	"github.com/d4l3k/flog/golfer"
+	"github.com/gorilla/handlers"
 	"github.com/jasonlvhit/gocron"
 )
 
@@ -156,8 +157,10 @@ func newServer() error {
 	mux.HandleFunc("/cancel", s.handleCancelReservation)
 	mux.HandleFunc("/", s.handleIndex)
 
+	handler := handlers.CombinedLoggingHandler(os.Stderr, mux)
+
 	log.Printf("Listening %s...", *bind)
-	if err := http.ListenAndServe(*bind, mux); err != nil {
+	if err := http.ListenAndServe(*bind, handler); err != nil {
 		return err
 	}
 
