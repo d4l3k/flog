@@ -40,6 +40,11 @@ const (
 	defaultMinute     = 10
 )
 
+// now is used so tests can override it.
+var now = func() time.Time {
+	return time.Now()
+}
+
 func parseDate(day string) (time.Time, error) {
 	t, err := time.ParseInLocation(golfer.DateFormat, day, time.Local)
 	if err != nil {
@@ -53,12 +58,16 @@ func dateIsBookable(day string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	available := t.Add(-daysCanBook * 24 * time.Hour)
-	return available.Before(time.Now()), nil
+	available := truncTimeToDay(t).Add(-daysCanBook * 24 * time.Hour)
+	return !available.After(now()), nil
+}
+
+func truncTimeToDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
 func furthestBookingTime() string {
-	day := time.Now().Add(defaultDaysAway * 24 * time.Hour)
+	day := now().Add(defaultDaysAway * 24 * time.Hour)
 	t := time.Date(day.Year(), day.Month(), day.Day(), defaultHour, defaultMinute, 0, 0, day.Location())
 	return t.Format(golfer.DateFormat)
 }
