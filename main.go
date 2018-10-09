@@ -17,8 +17,9 @@ import (
 	blackfriday "gopkg.in/russross/blackfriday.v2"
 
 	"github.com/d4l3k/flog/golfer"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/handlers"
-	"github.com/jasonlvhit/gocron"
+	"github.com/robfig/cron"
 )
 
 var (
@@ -151,13 +152,13 @@ func newServer() error {
 	}
 	s.g = g
 
-	sch := gocron.NewScheduler()
-	sch.Every(1).Days().At("00:00").Do(s.attemptBooking)
-	stop := sch.Start()
-	defer close(stop)
-
-	_, time := gocron.NextRun()
-	fmt.Println("next run", time)
+	sch := cron.New()
+	if err := sch.AddFunc("@midnight", s.attemptBooking); err != nil {
+		return err
+	}
+	sch.Start()
+	defer sch.Stop()
+	spew.Dump(sch.Entries())
 
 	mux := http.NewServeMux()
 
